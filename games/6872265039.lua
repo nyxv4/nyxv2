@@ -1,13 +1,13 @@
+-- bedwars lobby
+
 local run = function(func) func() end
 local cloneref = cloneref or function(obj) return obj end
-
 local playersService = cloneref(game:GetService('Players'))
 local replicatedStorage = cloneref(game:GetService('ReplicatedStorage'))
 local inputService = cloneref(game:GetService('UserInputService'))
 local tweenService = cloneref(game:GetService('TweenService'))
 local runService = cloneref(game:GetService('RunService')) 
 local httpService = cloneref(game:GetService('HttpService'))
-
 local lplr = playersService.LocalPlayer
 local vape = shared.vape
 local entitylib = vape.Libraries.entity
@@ -84,7 +84,13 @@ run(function()
 			}
 		end,
 		HudAliveCount = require(lplr.PlayerScripts.TS.controllers.global['top-bar'].ui.game['hud-alive-player-counts']).HudAlivePlayerCounts,
-		ItemMeta = debug.getupvalue(require(replicatedStorage.TS.item['item-meta']).getItemMeta, 1),
+		ItemMeta = (function()
+			local ok, mod = pcall(require, replicatedStorage.TS.item['item-meta'])
+			if ok and mod and mod.getItemMeta then
+				return debug.getupvalue(mod.getItemMeta, 1) or {}
+			end
+			return {}
+		end)(),
 		Knit = Knit,
 		KnockbackUtil = require(replicatedStorage.TS.damage['knockback-util']).KnockbackUtil,
 		MageKitUtil = require(replicatedStorage.TS.games.bedwars.kit.kits.mage['mage-kit-util']).MageKitUtil,
@@ -98,7 +104,13 @@ run(function()
 		RuntimeLib = require(replicatedStorage['rbxts_include'].RuntimeLib),
 		SoundList = require(replicatedStorage.TS.sound['game-sound']).GameSound,
 		Store = require(lplr.PlayerScripts.TS.ui.store).ClientStore,
-		TeamUpgradeMeta = debug.getupvalue(require(replicatedStorage.TS.games.bedwars['team-upgrade']['team-upgrade-meta']).getTeamUpgradeMetaForQueue, 6),
+		TeamUpgradeMeta = (function()
+			local ok, mod = pcall(require, replicatedStorage.TS.games.bedwars['team-upgrade']['team-upgrade-meta'])
+			if ok and mod and mod.getTeamUpgradeMetaForQueue then
+				return debug.getupvalue(mod.getTeamUpgradeMetaForQueue, 6) or {}
+			end
+			return {}
+		end)(),
 		UILayers = require(replicatedStorage['rbxts_include']['node_modules']['@easy-games']['game-core'].out).UILayers,
 		VisualizerUtils = require(lplr.PlayerScripts.TS.lib.visualizer['visualizer-utils']).VisualizerUtils,
 		WeldTable = require(replicatedStorage.TS.util['weld-util']).WeldUtil,
@@ -165,39 +177,83 @@ end)
 	
 run(function()
 	local AutoGamble
-	
+	local SpawnRemote = bedwars.Client:GetNamespace('RewardCrate'):Get('SpawnRewardCrate')
+	local OpenRemote = bedwars.Client:GetNamespace('RewardCrate'):Get('OpenRewardCrate')
+	local crateTypes = {'level_up_crate', 'diamond_lucky_crate', 'afk_crate', 'murder_crate', 'kitskin_crate'}
+
+	local function getNextCrateId(skip)
+		local active = bedwars.CrateAltarController and bedwars.CrateAltarController.activeCrates
+		if type(active) ~= 'table' then return nil end
+		for _, crateList in pairs(active) do
+			if type(crateList) == 'table' then
+				for _, crate in pairs(crateList) do
+					if type(crate) == 'table' then
+						local id = crate.attributes and crate.attributes.crateId
+						if not id and crate.instance then
+							local ok, a = pcall(function() return crate.instance:GetAttribute('crateId') end)
+							if ok then id = a end
+						end
+						if id and not (skip and skip[id]) then
+							return id
+						end
+					end
+				end
+			end
+		end
+		return nil
+	end
+
 	AutoGamble = vape.Categories.Minigames:CreateModule({
 		Name = 'AutoGamble',
 		Function = function(callback)
 			if callback then
-				AutoGamble:Clean(bedwars.Client:GetNamespace('RewardCrate'):Get('CrateOpened'):Connect(function(data)
-					if data.openingPlayer == lplr then
-						local tab = bedwars.CrateItemMeta[data.reward.itemType] or {displayName = data.reward.itemType or 'unknown'}
-						notif('AutoGamble', 'Won '..tab.displayName, 5)
-					end
-				end))
-	
-				repeat
-					if not bedwars.CrateAltarController.activeCrates[1] then
-						for _, v in bedwars.Store:getState().Consumable.inventory do
-							if v.consumable:find('crate') then
-								bedwars.CrateAltarController:pickCrate(v.consumable, 1)
-								task.wait(1.2)
-								if bedwars.CrateAltarController.activeCrates[1] and bedwars.CrateAltarController.activeCrates[1][1] then
-									bedwars.Client:GetNamespace('RewardCrate'):Get('OpenRewardCrate'):SendToServer({
-										crateId = bedwars.CrateAltarController.activeCrates[1][1].attributes.crateId,
-										altarId = 1
-									})
+				pcall(function()
+					AutoGamble:Clean(bedwars.Client:GetNamespace('RewardCrate'):Get('CrateOpened'):Connect(function(data)
+						if data.openingPlayer == lplr then
+							local tab = bedwars.CrateItemMeta and bedwars.CrateItemMeta[data.reward.itemType] or {displayName = data.reward.itemType or 'unknown'}
+							notif('AutoGamble', 'Won '..tab.displayName, 5)
+						end
+					end))
+				end)
+
+				task.spawn(function()
+					local opened = {}
+					local spawnAltar = 1
+					local knownType = nil
+					repeat
+						local crateId = getNextCrateId(opened)
+						if crateId then
+							opened[crateId] = true
+							OpenRemote:SendToServer({ crateId = crateId })
+							task.wait(1)
+						else
+							local list = knownType and {knownType} or crateTypes
+							local spawned = false
+							for _, ct in ipairs(list) do
+								if not AutoGamble.Enabled then break end
+								SpawnRemote:SendToServer({ altarId = spawnAltar, crateType = ct, useAltarUpgrade = false })
+								for _ = 1, 12 do
+									if not AutoGamble.Enabled then break end
+									if getNextCrateId(opened) then
+										knownType = ct
+										spawned = true
+										break
+									end
+									task.wait(0.2)
 								end
-								break
+								if spawned then break end
+							end
+							spawnAltar = spawnAltar == 1 and 0 or 1
+							if not spawned then
+								knownType = nil
+								task.wait(0.5)
 							end
 						end
-					end
-					task.wait(1)
-				until not AutoGamble.Enabled
+					until not AutoGamble.Enabled
+				end)
 			end
 		end,
-		Tooltip = 'Automatically opens lucky crates, piston inspired!'
+		Tooltip = 'auto opens whatever crate u own on whatever altar is open'
 	})
 end)
 	
@@ -2119,7 +2175,7 @@ run(function()
 
     LARPKits = vape.Categories.Minigames:CreateModule({
         Name = "LARPKits",
-        Tooltip = "do u own it or not !!! (client sided pls dont be dumb)",
+        Tooltip = "do u own it or not !!! (client-sided)",
         Function = function(callback)
             active = callback
             if callback then
@@ -2144,6 +2200,133 @@ run(function()
             if active then
                 applyKits()
             end
+        end
+    })
+end)
+
+run(function()
+    local AutoQueue
+    local QueueType
+    local Leave
+    
+    local Categories = {}
+    
+    AutoQueue = vape.Categories.Utility:CreateModule({
+        Name = 'Auto Queue',
+        Function = function(call)
+            if call then
+                repeat
+                    local partyData = bedwars.Store:getState().Party
+                    if partyData.leader.userId == lplr.UserId then
+                        if partyData.queueState == 3 and partyData.queueState ~= Categories[QueueType.Value] then
+                            replicatedStorage['events-@easy-games/lobby:shared/event/lobby-events@getEvents.Events'].leaveQueue:FireServer()
+                        elseif partyData.queueState < 2 then
+                            replicatedStorage['events-@easy-games/lobby:shared/event/lobby-events@getEvents.Events'].joinQueue:FireServer({
+                                queueType = Categories[QueueType.Value]
+                            })
+                            task.wait(1)
+                        end
+                    elseif Leave.Enabled then
+                        replicatedStorage['events-@easy-games/lobby:shared/event/lobby-events@getEvents.Events'].leaveParty:FireServer()
+                    end
+                    task.wait(0.1)
+                until not AutoQueue.Enabled
+    
+            else
+                replicatedStorage['events-@easy-games/lobby:shared/event/lobby-events@getEvents.Events'].leaveQueue:FireServer()
+            end
+        end
+    })
+    
+    local list = {}
+    for i,v in bedwars.QueueMeta do
+        if not v.disabled then
+            Categories[v.title] = i
+            table.insert(list, v.title)
+        end
+    end
+    QueueType = AutoQueue:CreateDropdown({
+        Name = 'Queue Type',
+        List = list,
+        Default = 'Duels (2v2)'
+    })
+    Leave = AutoQueue:CreateToggle({
+        Name = 'Leave Party',
+        Default = true
+    })
+end)
+
+run(function()
+    local LARPBedCoins
+    local customAmount = 0
+    local cachedLabel = nil
+
+    local function findLabel()
+        if cachedLabel and cachedLabel.Parent then
+            return cachedLabel
+        end
+        local pg = lplr:FindFirstChild("PlayerGui")
+        if not pg then return nil end
+        local sideGui = pg:FindFirstChild("LobbyHudSideGui")
+        if not sideGui then return nil end
+        local side = sideGui:FindFirstChild("LobbyHudSide")
+        if not side then return nil end
+        local currency = side:FindFirstChild("LobbyHudCurrency")
+        if not currency then return nil end
+        local inner = currency:FindFirstChild("LobbyHudCurrency")
+        if not inner then return nil end
+        local container = inner:FindFirstChild("Container")
+        if not container then return nil end
+        local amount = container:FindFirstChild("CurrencyAmount")
+        if not amount then return nil end
+        if not amount:IsA("TextLabel") then return nil end
+        cachedLabel = amount
+        return amount
+    end
+
+    local function formatNumber(n)
+        local s = tostring(math.floor(n))
+        local res = ""
+        for i = 1, #s do
+            res = res .. s:sub(i, i)
+            if (#s - i) % 3 == 0 and i ~= #s then
+                res = res .. ","
+            end
+        end
+        return res
+    end
+
+    local function updateCoins()
+        if not LARPBedCoins or not LARPBedCoins.Enabled then return end
+        local label = findLabel()
+        if not label then return end
+        label.Text = formatNumber(customAmount)
+    end
+
+    LARPBedCoins = vape.Categories.Minigames:CreateModule({
+        Name = "LARPBedCoins",
+        Tooltip = "larp ur bed coins",
+        Function = function(callback)
+            if callback then
+                LARPBedCoins:Clean(runService.RenderStepped:Connect(function()
+                    updateCoins()
+                end))
+                updateCoins()
+            else
+                cachedLabel = nil
+            end
+        end
+    })
+
+    LARPBedCoins:CreateSlider({
+        Name = "Coin Amount",
+        Min = 0,
+        Max = 1000000,
+        Default = 0,
+        Decimal = 1,
+        Function = function(val)
+            customAmount = math.floor(val)
+            if LARPBedCoins.Enabled then updateCoins() end
         end
     })
 end)
